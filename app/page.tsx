@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   AppBar,
   Toolbar,
@@ -13,7 +13,6 @@ import {
   CardActions,
   Button,
   TextField,
-  IconButton,
   Snackbar,
   Alert,
   CssBaseline,
@@ -26,6 +25,7 @@ import {
   DialogTitle,
   DialogContent,
   DialogActions,
+  IconButton,
 } from "@mui/material";
 import { ThemeProvider, createTheme } from "@mui/material/styles";
 import HomeIcon from "@mui/icons-material/Home";
@@ -49,14 +49,23 @@ import CloudOffIcon from "@mui/icons-material/CloudOff";
 import SearchIcon from "@mui/icons-material/Search";
 import SettingsIcon from "@mui/icons-material/Settings";
 import EditIcon from "@mui/icons-material/Edit";
+import FormatBoldIcon from "@mui/icons-material/FormatBold";
+import FormatItalicIcon from "@mui/icons-material/FormatItalic";
+import FormatUnderlinedIcon from "@mui/icons-material/FormatUnderlined";
+import FormatListBulletedIcon from "@mui/icons-material/FormatListBulleted";
+import FormatListNumberedIcon from "@mui/icons-material/FormatListNumbered";
+import TitleIcon from "@mui/icons-material/Title";
+import UndoIcon from "@mui/icons-material/Undo";
+import RedoIcon from "@mui/icons-material/Redo";
 
 type NoteItem = {
   id: string;
   title: string;
-  content: string;
+  html: string;          // rich content (HTML)
   timestamp: number;
   tags: string[];
   pinned: boolean;
+  category?: string;
 };
 
 type SnackSeverity = "success" | "info" | "warning" | "error";
@@ -71,6 +80,7 @@ type Asset = {
   size: number;
   created: number;
   file: File;
+  folder?: string;       // simple categorization
 };
 
 // Web Share API types
@@ -82,11 +92,12 @@ type ShareData = {
 type NavigatorShare = Navigator & {
   share?: (data: ShareData) => Promise<void>;
 };
+const isWebShareAvailable = (nav: Navigator): nav is NavigatorShare =>
+  typeof (nav as NavigatorShare).share === "function";
 
 // IndexedDB helpers
-const dbName = "studySuperAppDB";
+const dbName = "studyProDB";
 const storeName = "assets";
-
 function openDB(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
     const req = indexedDB.open(dbName, 1);
@@ -100,23 +111,16 @@ function openDB(): Promise<IDBDatabase> {
     req.onerror = () => reject(req.error);
   });
 }
-
-async function addAsset(id: string, file: File): Promise<void> {
+async function addAsset(id: string, record: Omit<Asset, "id"> & { id: string }): Promise<void> {
   const db = await openDB();
-  const kind: AssetKind =
-    file.type.includes("pdf") ? "pdf" :
-    file.type.startsWith("image/") ? "image" :
-    file.type.startsWith("video/") ? "video" : "other";
   return new Promise((resolve, reject) => {
     const tx = db.transaction(storeName, "readwrite");
     const store = tx.objectStore(storeName);
-    const record = { id, file, name: file.name, kind, type: file.type, size: file.size, created: Date.now() };
     const req = store.put(record);
     req.onsuccess = () => resolve();
     req.onerror = () => reject(req.error);
   });
 }
-
 async function getAllAssets(): Promise<Asset[]> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -127,7 +131,6 @@ async function getAllAssets(): Promise<Asset[]> {
     req.onerror = () => reject(req.error);
   });
 }
-
 async function deleteAsset(id: string): Promise<void> {
   const db = await openDB();
   return new Promise((resolve, reject) => {
@@ -138,11 +141,65 @@ async function deleteAsset(id: string): Promise<void> {
     req.onerror = () => reject(req.error);
   });
 }
-
 function fileToObjectURL(file: File): string {
   return URL.createObjectURL(file);
 }
 
+// Rich text editor component (contentEditable, no external libs)
+type RichTextEditorProps = {
+  html: string;
+  onChange: (nextHtml: string) => void;
+  placeholder?: string;
+};
+function RichTextEditor({ html, onChange, placeholder }: RichTextEditorProps) {
+  const ref = useRef<HTMLDivElement | null>(null);
+  const exec = (cmd: "bold" | "italic" | "underline" | "insertUnorderedList" | "insertOrderedList" | "formatBlock", value?: string) => {
+    document.execCommand(cmd, false, value);
+    if (ref.current) onChange(ref.current.innerHTML);
+  };
+  const applyHeading = (level: 1 | 2 | 3) => exec("formatBlock", `h${level}`);
+  const undo = () => {
+    document.execCommand("undo");
+    if (ref.current) onChange(ref.current.innerHTML);
+  };
+  const redo = () => {
+    document.execCommand("redo");
+    if (ref.current) onChange(ref.current.innerHTML);
+  };
+  return (
+    <Stack spacing={1}>
+      <Stack direction="row" spacing={1} flexWrap="wrap">
+        <Tooltip title="Bold"><IconButton onClick={() => exec("bold")}><FormatBoldIcon /></IconButton></Tooltip>
+        <Tooltip title="Italic"><IconButton onClick={() => exec("italic")}><FormatItalicIcon /></IconButton></Tooltip>
+        <Tooltip title="Underline"><IconButton onClick={() => exec("underline")}><FormatUnderlinedIcon /></IconButton></Tooltip>
+        <Tooltip title="Bulleted list"><IconButton onClick={() => exec("insertUnorderedList")}><FormatListBulletedIcon /></IconButton></Tooltip>
+        <Tooltip title="Numbered list"><IconButton onClick={() => exec("insertOrderedList")}><FormatListNumberedIcon /></IconButton></Tooltip>
+        <Tooltip title="Heading 1"><IconButton onClick={() => applyHeading(1)}><TitleIcon /></IconButton></Tooltip>
+        <Tooltip title="Undo"><IconButton onClick={undo}><UndoIcon /></IconButton></Tooltip>
+        <Tooltip title="Redo"><IconButton onClick={redo}><RedoIcon /></IconButton></Tooltip>
+      </Stack>
+      <Box
+        ref={ref}
+        contentEditable
+        suppressContentEditableWarning
+        onInput={(e) => onChange((e.target as HTMLDivElement).innerHTML)}
+        sx={{
+          minHeight: 200,
+          p: 2,
+          borderRadius: 1,
+          border: "1px solid",
+          borderColor: "divider",
+          fontSize: 15,
+          lineHeight: 1.6,
+        }}
+        dangerouslySetInnerHTML={{ __html: html || "" }}
+        aria-placeholder={placeholder}
+      />
+    </Stack>
+  );
+}
+
+// Main page
 export default function Page() {
   const [mode, setMode] = useState<"light" | "dark">("light");
   const [tab, setTab] = useState<number>(0);
@@ -152,9 +209,13 @@ export default function Page() {
 
   const [library, setLibrary] = useState<Asset[]>([]);
   const [previewAsset, setPreviewAsset] = useState<Asset | null>(null);
+  const [renameAsset, setRenameAsset] = useState<Asset | null>(null);
 
-  const [search, setSearch] = useState<string>("");
-  const [editingNote, setEditingNote] = useState<NoteItem | null>(null);
+  const [searchNotes, setSearchNotes] = useState<string>("");
+  const [searchLibrary, setSearchLibrary] = useState<string>("");
+  const [noteTitle, setNoteTitle] = useState<string>("");
+  const [noteHtml, setNoteHtml] = useState<string>("");
+  const [editNote, setEditNote] = useState<NoteItem | null>(null);
 
   useEffect(() => {
     try {
@@ -164,15 +225,12 @@ export default function Page() {
       if (rawNotes) setNotes(JSON.parse(rawNotes) as NoteItem[]);
     } catch {}
   }, []);
-
   useEffect(() => {
     localStorage.setItem("mui-mode", mode);
   }, [mode]);
-
   useEffect(() => {
     localStorage.setItem("notes", JSON.stringify(notes));
   }, [notes]);
-
   useEffect(() => {
     const onUp = () => setOnline(true);
     const onDown = () => setOnline(false);
@@ -183,7 +241,6 @@ export default function Page() {
       window.removeEventListener("offline", onDown);
     };
   }, []);
-
   useEffect(() => {
     (async () => {
       try {
@@ -209,23 +266,27 @@ export default function Page() {
   const showSnack = (message: string, severity: SnackSeverity = "success") =>
     setSnackbar({ open: true, message, severity });
 
-  const extractTags = (text: string): string[] => {
+  const extractTags = (html: string): string[] => {
+    const text = html.replace(/<[^>]+>/g, " ");
     const words = text.split(/\W+/).filter((w) => w.length > 3);
     const unique = Array.from(new Set(words));
-    return unique.slice(0, 6);
+    return unique.slice(0, 8);
   };
 
-  const addNote = (title: string, content: string) => {
+  const addNote = () => {
+    if (!noteHtml.trim()) return showSnack("Write some content", "warning");
     const id = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
     const newNote: NoteItem = {
       id,
-      title: title.trim() || "Untitled",
-      content: content.trim(),
+      title: noteTitle.trim() || "Untitled",
+      html: noteHtml,
       timestamp: Date.now(),
-      tags: extractTags(content),
+      tags: extractTags(noteHtml),
       pinned: false,
     };
     setNotes((prev) => [newNote, ...prev]);
+    setNoteTitle("");
+    setNoteHtml("");
     showSnack("Note saved", "success");
   };
 
@@ -247,7 +308,10 @@ export default function Page() {
     );
   };
 
-  const copyText = async (text: string) => {
+  const copyHtml = async (html: string) => {
+    const temp = document.createElement("div");
+    temp.innerHTML = html;
+    const text = temp.textContent || temp.innerText || "";
     try {
       await navigator.clipboard.writeText(text);
       showSnack("Copied", "info");
@@ -256,21 +320,18 @@ export default function Page() {
     }
   };
 
-  const isWebShareAvailable = (nav: Navigator): nav is NavigatorShare => {
-    return typeof (nav as NavigatorShare).share === "function";
-  };
-
-  const shareText = async (title: string, text: string, url?: string) => {
+  const shareNote = async (note: NoteItem) => {
+    const text = `${note.title}\n${new Date(note.timestamp).toLocaleString()}\n\n${note.html.replace(/<[^>]+>/g, " ")}`;
     try {
       if (isWebShareAvailable(navigator)) {
-        await navigator.share({ title, text, url });
+        await navigator.share({ title: note.title, text });
         showSnack("Shared", "success");
       } else {
-        await navigator.clipboard.writeText([title, text, url || ""].filter(Boolean).join("\n\n"));
+        await navigator.clipboard.writeText(text);
         showSnack("Share unavailable; copied instead", "info");
       }
     } catch {
-      await navigator.clipboard.writeText([title, text, url || ""].filter(Boolean).join("\n\n"));
+      await navigator.clipboard.writeText(text);
       showSnack("Share failed; copied instead", "warning");
     }
   };
@@ -300,8 +361,8 @@ export default function Page() {
       const clean: NoteItem[] = data
         .filter((n) => n && typeof n === "object")
         .map((raw) => raw as NoteItem)
-        .filter((n) => n.id && n.title && typeof n.content === "string" && typeof n.timestamp === "number")
-        .map((n) => ({ ...n, pinned: !!n.pinned, tags: Array.isArray(n.tags) ? n.tags : extractTags(n.content) }));
+        .filter((n) => n.id && n.title && typeof n.html === "string" && typeof n.timestamp === "number")
+        .map((n) => ({ ...n, pinned: !!n.pinned, tags: Array.isArray(n.tags) ? n.tags : extractTags(n.html) }));
       setNotes(clean);
       showSnack("Imported notes", "success");
     } catch {
@@ -311,26 +372,23 @@ export default function Page() {
 
   const printNoteToPDF = (note: NoteItem) => {
     const win = window.open("", "_blank", "noopener,noreferrer");
-    if (!win) {
-      showSnack("Pop-up blocked. Allow pop-ups.", "warning");
-      return;
-    }
+    if (!win) return showSnack("Pop-up blocked. Allow pop-ups.", "warning");
     win.document.write(`
       <html>
         <head>
-          <title>${note.title}</title>
+          <title>${escapeHtml(note.title)}</title>
           <style>
             body { font-family: Arial, sans-serif; padding: 24px; }
             h1 { margin-bottom: 8px; }
             time { color: #666; font-size: 12px; }
-            pre { white-space: pre-wrap; word-wrap: break-word; font-size: 14px; }
+            .content { font-size: 14px; line-height: 1.6; }
           </style>
         </head>
         <body>
           <h1>${escapeHtml(note.title)}</h1>
           <time>${new Date(note.timestamp).toLocaleString()}</time>
           <hr />
-          <pre>${escapeHtml(note.content)}</pre>
+          <div class="content">${note.html}</div>
           <script>window.print();</script>
         </body>
       </html>
@@ -341,12 +399,17 @@ export default function Page() {
   const escapeHtml = (s: string) =>
     s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
 
-  const uploadAssets = async (files: FileList | null) => {
+  const uploadAssets = async (files: FileList | null, folder?: string) => {
     if (!files || files.length === 0) return;
     try {
       for (const file of Array.from(files)) {
         const id = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
-        await addAsset(id, file);
+        const kind: AssetKind =
+          file.type.includes("pdf") ? "pdf" :
+          file.type.startsWith("image/") ? "image" :
+          file.type.startsWith("video/") ? "video" : "other";
+        const record: Asset = { id, name: file.name, kind, type: file.type, size: file.size, created: Date.now(), file, folder };
+        await addAsset(id, record);
       }
       const items = await getAllAssets();
       setLibrary(items);
@@ -367,13 +430,34 @@ export default function Page() {
     }
   };
 
+  const renameAssetLocal = async () => {
+    if (!renameAsset) return;
+    try {
+      // Rewrite object in DB with the same file, new name/folder
+      await addAsset(renameAsset.id, renameAsset);
+      const items = await getAllAssets();
+      setLibrary(items);
+      setRenameAsset(null);
+      showSnack("Asset updated", "success");
+    } catch {
+      showSnack("Update failed", "error");
+    }
+  };
+
   const filteredNotes = notes.filter((n) => {
-    const q = search.trim().toLowerCase();
+    const q = searchNotes.trim().toLowerCase();
     if (!q) return true;
-    return n.title.toLowerCase().includes(q) || n.content.toLowerCase().includes(q) || n.tags.some((t) => t.toLowerCase().includes(q));
+    const plain = n.html.replace(/<[^>]+>/g, " ").toLowerCase();
+    return n.title.toLowerCase().includes(q) || plain.includes(q) || n.tags.some((t) => t.toLowerCase().includes(q));
   });
 
-  // Screens (no Grid, responsive via Stack/Box)
+  const filteredLibrary = library.filter((a) => {
+    const q = searchLibrary.trim().toLowerCase();
+    if (!q) return true;
+    return a.name.toLowerCase().includes(q) || (a.folder || "").toLowerCase().includes(q) || a.kind.toLowerCase().includes(q);
+  });
+
+  // Screens
 
   const HomeScreen = () => {
     const pinned = notes.filter((n) => n.pinned).slice(0, 4);
@@ -385,7 +469,7 @@ export default function Page() {
             <CardContent>
               <Stack direction="row" alignItems="center" justifyContent="space-between" flexWrap="wrap">
                 <Stack direction="row" spacing={1} alignItems="center">
-                  <Typography variant="h6">Study Super App</Typography>
+                  <Typography variant="h6">Study Pro (Android style)</Typography>
                   <Chip
                     icon={online ? <CloudDoneIcon /> : <CloudOffIcon />}
                     label={online ? "Online" : "Offline"}
@@ -395,7 +479,7 @@ export default function Page() {
                 </Stack>
                 <Stack direction="row" spacing={1}>
                   <Button variant="contained" startIcon={<NoteAddIcon />} onClick={() => setTab(1)}>
-                    New note
+                    Notes
                   </Button>
                   <Button variant="outlined" startIcon={<Inventory2Icon />} onClick={() => setTab(2)}>
                     Library
@@ -403,7 +487,7 @@ export default function Page() {
                 </Stack>
               </Stack>
               <Typography variant="body2" sx={{ mt: 1 }}>
-                Create notes, save PDFs, manage files, preview videos/images, share and export—all offline and online.
+                Create and edit rich notes, import PDFs, watch videos and view images—all within one app, offline and online.
               </Typography>
             </CardContent>
           </Card>
@@ -451,44 +535,29 @@ export default function Page() {
   };
 
   const NoteScreen = () => {
-    const [title, setTitle] = useState<string>("");
-    const [content, setContent] = useState<string>("");
     return (
       <Container sx={{ py: 2 }}>
         <Stack spacing={2}>
           <Card>
             <CardContent>
               <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap">
-                <Typography variant="h6">Create note</Typography>
+                <Typography variant="h6">Create rich note</Typography>
                 <Chip icon={<SearchIcon />} label="Tip: add keywords for better search" size="small" />
               </Stack>
               <Stack spacing={2} sx={{ mt: 2 }}>
-                <TextField label="Title" value={title} onChange={(e) => setTitle(e.target.value)} fullWidth />
-                <TextField
-                  label="Content"
-                  value={content}
-                  onChange={(e) => setContent(e.target.value)}
-                  fullWidth
-                  multiline
-                  minRows={8}
-                  placeholder={`• Key points\n  - Short bullets\n• Summary\n  - Keep it concise`}
+                <TextField label="Title" value={noteTitle} onChange={(e) => setNoteTitle(e.target.value)} fullWidth />
+                <RichTextEditor
+                  html={noteHtml}
+                  onChange={setNoteHtml}
+                  placeholder="Type your study notes here… Use the toolbar to format."
                 />
               </Stack>
             </CardContent>
             <CardActions>
-              <Button
-                variant="contained"
-                startIcon={<SaveIcon />}
-                onClick={() => {
-                  if (!content.trim()) return showSnack("Write some content", "warning");
-                  addNote(title, content);
-                  setTitle("");
-                  setContent("");
-                }}
-              >
+              <Button variant="contained" startIcon={<SaveIcon />} onClick={addNote}>
                 Save
               </Button>
-              <Button variant="text" startIcon={<RestartAltIcon />} onClick={() => { setTitle(""); setContent(""); }}>
+              <Button variant="text" startIcon={<RestartAltIcon />} onClick={() => { setNoteTitle(""); setNoteHtml(""); }}>
                 Reset
               </Button>
             </CardActions>
@@ -497,7 +566,7 @@ export default function Page() {
           <Card>
             <CardContent>
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ xs: "stretch", sm: "center" }}>
-                <TextField label="Search notes" value={search} onChange={(e) => setSearch(e.target.value)} fullWidth />
+                <TextField label="Search notes" value={searchNotes} onChange={(e) => setSearchNotes(e.target.value)} fullWidth />
                 <Button variant="outlined" startIcon={<DownloadIcon />} onClick={exportNotesJSON} disabled={notes.length === 0}>
                   Export JSON
                 </Button>
@@ -509,7 +578,7 @@ export default function Page() {
                     accept="application/json"
                     onChange={(e) => {
                       const f = e.target.files?.[0] || null;
-                      if (f) importNotesJSON(f);
+                      if (f) void importNotesJSON(f);
                     }}
                   />
                 </Button>
@@ -539,20 +608,24 @@ export default function Page() {
                     <Typography variant="caption" color="text.secondary">
                       {new Date(n.timestamp).toLocaleString()}
                     </Typography>
-                    <TextField
-                      fullWidth
-                      multiline
-                      minRows={6}
-                      sx={{ mt: 1 }}
-                      value={n.content}
-                      onChange={(e) => updateNote({ ...n, content: e.target.value, tags: extractTags(e.target.value) })}
+                    <Box
+                      sx={{
+                        mt: 1,
+                        p: 2,
+                        borderRadius: 1,
+                        border: "1px solid",
+                        borderColor: "divider",
+                        fontSize: 15,
+                        lineHeight: 1.7,
+                      }}
+                      dangerouslySetInnerHTML={{ __html: n.html }}
                     />
                   </CardContent>
                   <CardActions sx={{ flexWrap: "wrap", gap: 1 }}>
-                    <Button variant="outlined" startIcon={<ContentCopyIcon />} onClick={() => copyText(n.content)}>
+                    <Button variant="outlined" startIcon={<ContentCopyIcon />} onClick={() => void copyHtml(n.html)}>
                       Copy
                     </Button>
-                    <Button variant="outlined" startIcon={<ShareIcon />} onClick={() => shareText(n.title, n.content)}>
+                    <Button variant="outlined" startIcon={<ShareIcon />} onClick={() => void shareNote(n)}>
                       Share
                     </Button>
                     <Button variant="outlined" startIcon={<PictureAsPdfIcon />} onClick={() => printNoteToPDF(n)}>
@@ -569,8 +642,8 @@ export default function Page() {
                     <Button variant="text" color="error" startIcon={<DeleteForeverIcon />} onClick={() => deleteNote(n.id)}>
                       Delete
                     </Button>
-                    <Button variant="text" startIcon={<EditIcon />} onClick={() => setEditingNote(n)}>
-                      Edit title
+                    <Button variant="text" startIcon={<EditIcon />} onClick={() => setEditNote(n)}>
+                      Edit
                     </Button>
                   </CardActions>
                 </Card>
@@ -578,24 +651,30 @@ export default function Page() {
             )}
           </Stack>
 
-          <Dialog open={!!editingNote} onClose={() => setEditingNote(null)} fullWidth maxWidth="sm">
-            <DialogTitle>Edit note title</DialogTitle>
+          <Dialog open={!!editNote} onClose={() => setEditNote(null)} fullWidth maxWidth="md">
+            <DialogTitle>Edit note</DialogTitle>
             <DialogContent dividers>
-              <TextField
-                label="Title"
-                fullWidth
-                value={editingNote?.title || ""}
-                onChange={(e) => setEditingNote((prev) => (prev ? { ...prev, title: e.target.value } : prev))}
-              />
+              <Stack spacing={2}>
+                <TextField
+                  label="Title"
+                  fullWidth
+                  value={editNote?.title || ""}
+                  onChange={(e) => setEditNote((prev) => (prev ? { ...prev, title: e.target.value } : prev))}
+                />
+                <RichTextEditor
+                  html={editNote?.html || ""}
+                  onChange={(val) => setEditNote((prev) => (prev ? { ...prev, html: val, tags: extractTags(val) } : prev))}
+                />
+              </Stack>
             </DialogContent>
             <DialogActions>
-              <Button onClick={() => setEditingNote(null)}>Cancel</Button>
+              <Button onClick={() => setEditNote(null)}>Cancel</Button>
               <Button
                 variant="contained"
                 onClick={() => {
-                  if (!editingNote) return;
-                  updateNote(editingNote);
-                  setEditingNote(null);
+                  if (!editNote) return;
+                  updateNote(editNote);
+                  setEditNote(null);
                 }}
               >
                 Save
@@ -608,6 +687,7 @@ export default function Page() {
   };
 
   const LibraryScreen = () => {
+    const [folderInput, setFolderInput] = useState<string>("");
     return (
       <Container sx={{ py: 2 }}>
         <Stack spacing={2}>
@@ -616,6 +696,12 @@ export default function Page() {
               <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ xs: "stretch", sm: "center" }}>
                 <Typography variant="h6">Library (offline files)</Typography>
                 <Stack direction="row" spacing={1} sx={{ ml: { sm: "auto" } }}>
+                  <TextField
+                    size="small"
+                    placeholder="Folder (optional)"
+                    value={folderInput}
+                    onChange={(e) => setFolderInput(e.target.value)}
+                  />
                   <Button variant="outlined" component="label" startIcon={<UploadFileIcon />}>
                     Add files
                     <input
@@ -623,7 +709,7 @@ export default function Page() {
                       type="file"
                       multiple
                       accept="application/pdf,video/*,image/*,*/*"
-                      onChange={(e) => uploadAssets(e.target.files)}
+                      onChange={(e) => void uploadAssets(e.target.files, folderInput.trim() || undefined)}
                     />
                   </Button>
                   <Button
@@ -639,21 +725,29 @@ export default function Page() {
                   </Button>
                 </Stack>
               </Stack>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} sx={{ mt: 2 }} alignItems={{ xs: "stretch", sm: "center" }}>
+                <TextField
+                  label="Search library"
+                  value={searchLibrary}
+                  onChange={(e) => setSearchLibrary(e.target.value)}
+                  fullWidth
+                />
+              </Stack>
               <Typography variant="body2" sx={{ mt: 1 }}>
-                Upload PDFs, videos, images, and other files. Stored offline in your browser (IndexedDB).
+                Upload PDFs, videos, images, and other files—stored offline in IndexedDB. Preview inside the app.
               </Typography>
             </CardContent>
           </Card>
 
-          {library.length === 0 ? (
+          {filteredLibrary.length === 0 ? (
             <Card>
               <CardContent>
-                <Typography variant="body2">No files yet. Add some to see them here.</Typography>
+                <Typography variant="body2">No files yet or no match. Add files to see them here.</Typography>
               </CardContent>
             </Card>
           ) : (
             <Stack spacing={2}>
-              {library.map((asset) => (
+              {filteredLibrary.map((asset) => (
                 <Card key={asset.id}>
                   <CardContent>
                     <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }}>
@@ -663,6 +757,7 @@ export default function Page() {
                         {asset.kind === "image" && <ImageIcon color="primary" />}
                         <Typography variant="subtitle1">{asset.name}</Typography>
                         <Chip label={asset.kind} size="small" variant="outlined" />
+                        {asset.folder && <Chip label={`Folder: ${asset.folder}`} size="small" variant="outlined" />}
                         <Typography variant="caption" color="text.secondary">
                           {(asset.size / (1024 * 1024)).toFixed(2)} MB
                         </Typography>
@@ -679,10 +774,18 @@ export default function Page() {
                       startIcon={<ShareIcon />}
                       onClick={() => {
                         const url = fileToObjectURL(asset.file);
-                        void shareText(asset.name, `Saved in Library\n${new Date(asset.created).toLocaleString()}`, url);
+                        const text = `Saved in Library\n${new Date(asset.created).toLocaleString()}`;
+                        if (isWebShareAvailable(navigator)) {
+                          void navigator.share({ title: asset.name, text, url });
+                        } else {
+                          void navigator.clipboard.writeText(`${asset.name}\n${text}\n${url}`).then(() => showSnack("Share unavailable; copied link", "info"));
+                        }
                       }}
                     >
                       Share
+                    </Button>
+                    <Button variant="outlined" startIcon={<EditIcon />} onClick={() => setRenameAsset(asset)}>
+                      Rename / Move
                     </Button>
                     <Button variant="text" color="error" startIcon={<DeleteForeverIcon />} onClick={() => void removeAsset(asset.id)}>
                       Delete
@@ -743,12 +846,38 @@ export default function Page() {
               <Button onClick={() => setPreviewAsset(null)}>Close</Button>
             </DialogActions>
           </Dialog>
+
+          <Dialog open={!!renameAsset} onClose={() => setRenameAsset(null)} fullWidth maxWidth="sm">
+            <DialogTitle>Rename / Move</DialogTitle>
+            <DialogContent dividers>
+              <Stack spacing={2}>
+                <TextField
+                  label="Name"
+                  value={renameAsset?.name || ""}
+                  onChange={(e) => setRenameAsset((prev) => (prev ? { ...prev, name: e.target.value } : prev))}
+                />
+                <TextField
+                  label="Folder (optional)"
+                  value={renameAsset?.folder || ""}
+                  onChange={(e) => setRenameAsset((prev) => (prev ? { ...prev, folder: e.target.value } : prev))}
+                />
+              </Stack>
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setRenameAsset(null)}>Cancel</Button>
+              <Button variant="contained" onClick={() => void renameAssetLocal()}>
+                Save
+              </Button>
+            </DialogActions>
+          </Dialog>
         </Stack>
       </Container>
     );
   };
 
   const ProfileScreen = () => {
+    const total = notes.length;
+    const pinnedCount = notes.filter((n) => n.pinned).length;
     return (
       <Container sx={{ py: 2 }}>
         <Stack spacing={2}>
@@ -763,9 +892,12 @@ export default function Page() {
                 <Switch checked={mode === "dark"} onChange={() => setMode(mode === "dark" ? "light" : "dark")} />
                 <Chip label={mode === "dark" ? "Dark" : "Light"} variant="outlined" size="small" />
               </Stack>
-              <Typography variant="body2" sx={{ mt: 2 }}>
-                Data is stored locally (offline). Use Export/Import to back up notes. Files are kept in IndexedDB.
-              </Typography>
+              <Stack spacing={1} sx={{ mt: 2 }}>
+                <Typography variant="body2">Total notes: {total}</Typography>
+                <Typography variant="body2">Pinned notes: {pinnedCount}</Typography>
+                <Typography variant="body2">Library items: {library.length}</Typography>
+                <Typography variant="body2">Status: {online ? "Online" : "Offline"}</Typography>
+              </Stack>
             </CardContent>
           </Card>
         </Stack>
@@ -779,7 +911,7 @@ export default function Page() {
       <Box sx={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
         <AppBar position="static" color="primary">
           <Toolbar sx={{ justifyContent: "space-between", flexWrap: "wrap" }}>
-            <Typography variant="h6">Study Super App</Typography>
+            <Typography variant="h6">Study Pro</Typography>
             <Stack direction="row" spacing={1} alignItems="center">
               <Chip
                 icon={online ? <CloudDoneIcon /> : <CloudOffIcon />}
@@ -800,7 +932,6 @@ export default function Page() {
         </Box>
 
         <BottomNavigation value={tab} onChange={(_, v) => setTab(v)} showLabels>
-          - 
           <BottomNavigationAction label="Home" icon={<HomeIcon />} />
           <BottomNavigationAction label="Notes" icon={<NoteAddIcon />} />
           <BottomNavigationAction label="Library" icon={<Inventory2Icon />} />
