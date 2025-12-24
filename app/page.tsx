@@ -19,22 +19,13 @@ import {
   CssBaseline,
   Switch,
   Box,
-  Divider,
-  List,
-  ListItem,
-  ListItemText,
-  Chip,
   Stack,
+  Chip,
   Tooltip,
   Dialog,
   DialogTitle,
   DialogContent,
   DialogActions,
-  MenuItem,
-  Select,
-  InputLabel,
-  FormControl,
-  Badge,
 } from "@mui/material";
 import { ThemeProvider, createTheme } from "@mui/material/styles";
 import HomeIcon from "@mui/icons-material/Home";
@@ -44,20 +35,20 @@ import PersonIcon from "@mui/icons-material/Person";
 import ContentCopyIcon from "@mui/icons-material/ContentCopy";
 import RestartAltIcon from "@mui/icons-material/RestartAlt";
 import DeleteForeverIcon from "@mui/icons-material/DeleteForever";
-import TipsAndUpdatesIcon from "@mui/icons-material/TipsAndUpdates";
-import SchoolIcon from "@mui/icons-material/School";
-import CheckCircleIcon from "@mui/icons-material/CheckCircle";
-import NightsStayIcon from "@mui/icons-material/NightsStay";
-import WbSunnyIcon from "@mui/icons-material/WbSunny";
-import EditIcon from "@mui/icons-material/Edit";
 import PushPinIcon from "@mui/icons-material/PushPin";
 import PushPinOutlinedIcon from "@mui/icons-material/PushPinOutlined";
 import ShareIcon from "@mui/icons-material/Share";
 import DownloadIcon from "@mui/icons-material/Download";
 import UploadFileIcon from "@mui/icons-material/UploadFile";
-import SortIcon from "@mui/icons-material/Sort";
-import CheckIcon from "@mui/icons-material/Check";
-import InfoIcon from "@mui/icons-material/Info";
+import PictureAsPdfIcon from "@mui/icons-material/PictureAsPdf";
+import Inventory2Icon from "@mui/icons-material/Inventory2";
+import MovieIcon from "@mui/icons-material/Movie";
+import ImageIcon from "@mui/icons-material/Image";
+import CloudDoneIcon from "@mui/icons-material/CloudDone";
+import CloudOffIcon from "@mui/icons-material/CloudOff";
+import SearchIcon from "@mui/icons-material/Search";
+import SettingsIcon from "@mui/icons-material/Settings";
+import EditIcon from "@mui/icons-material/Edit";
 
 type NoteItem = {
   id: string;
@@ -65,725 +56,719 @@ type NoteItem = {
   content: string;
   timestamp: number;
   tags: string[];
-  pinned?: boolean;
-  color?: "default" | "primary" | "secondary" | "success" | "warning" | "error";
+  pinned: boolean;
 };
 
-type Snack = { open: boolean; message: string; severity: "success" | "info" | "warning" | "error" };
+type SnackSeverity = "success" | "info" | "warning" | "error";
+type Snack = { open: boolean; message: string; severity: SnackSeverity };
+
+type AssetKind = "pdf" | "image" | "video" | "other";
+type Asset = {
+  id: string;
+  name: string;
+  kind: AssetKind;
+  type: string;
+  size: number;
+  created: number;
+  file: File;
+};
+
+// Web Share API types
+type ShareData = {
+  title?: string;
+  text?: string;
+  url?: string;
+};
+type NavigatorShare = Navigator & {
+  share?: (data: ShareData) => Promise<void>;
+};
+
+// IndexedDB helpers
+const dbName = "studySuperAppDB";
+const storeName = "assets";
+
+function openDB(): Promise<IDBDatabase> {
+  return new Promise((resolve, reject) => {
+    const req = indexedDB.open(dbName, 1);
+    req.onupgradeneeded = () => {
+      const db = req.result;
+      if (!db.objectStoreNames.contains(storeName)) {
+        db.createObjectStore(storeName, { keyPath: "id" });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function addAsset(id: string, file: File): Promise<void> {
+  const db = await openDB();
+  const kind: AssetKind =
+    file.type.includes("pdf") ? "pdf" :
+    file.type.startsWith("image/") ? "image" :
+    file.type.startsWith("video/") ? "video" : "other";
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, "readwrite");
+    const store = tx.objectStore(storeName);
+    const record = { id, file, name: file.name, kind, type: file.type, size: file.size, created: Date.now() };
+    const req = store.put(record);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function getAllAssets(): Promise<Asset[]> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, "readonly");
+    const store = tx.objectStore(storeName);
+    const req = store.getAll();
+    req.onsuccess = () => resolve(req.result as Asset[]);
+    req.onerror = () => reject(req.error);
+  });
+}
+
+async function deleteAsset(id: string): Promise<void> {
+  const db = await openDB();
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, "readwrite");
+    const store = tx.objectStore(storeName);
+    const req = store.delete(id);
+    req.onsuccess = () => resolve();
+    req.onerror = () => reject(req.error);
+  });
+}
+
+function fileToObjectURL(file: File): string {
+  return URL.createObjectURL(file);
+}
 
 export default function Page() {
   const [mode, setMode] = useState<"light" | "dark">("light");
   const [tab, setTab] = useState<number>(0);
-  const [savedNotes, setSavedNotes] = useState<NoteItem[]>([]);
+  const [notes, setNotes] = useState<NoteItem[]>([]);
   const [snackbar, setSnackbar] = useState<Snack>({ open: false, message: "", severity: "success" });
-  const [firstLaunch, setFirstLaunch] = useState<boolean>(false);
+  const [online, setOnline] = useState<boolean>(typeof navigator !== "undefined" ? navigator.onLine : true);
+
+  const [library, setLibrary] = useState<Asset[]>([]);
+  const [previewAsset, setPreviewAsset] = useState<Asset | null>(null);
+
+  const [search, setSearch] = useState<string>("");
+  const [editingNote, setEditingNote] = useState<NoteItem | null>(null);
 
   useEffect(() => {
     try {
       const m = localStorage.getItem("mui-mode");
       if (m === "dark" || m === "light") setMode(m);
-      const raw = localStorage.getItem("saved-notes");
-      if (raw) {
-        const parsed = JSON.parse(raw) as NoteItem[];
-        setSavedNotes(Array.isArray(parsed) ? parsed : []);
-      }
-      const onboard = localStorage.getItem("onboarding-shown");
-      if (!onboard) {
-        setFirstLaunch(true);
-      }
-    } catch {
-      // ignore
-    }
+      const rawNotes = localStorage.getItem("notes");
+      if (rawNotes) setNotes(JSON.parse(rawNotes) as NoteItem[]);
+    } catch {}
   }, []);
 
   useEffect(() => {
-    try {
-      localStorage.setItem("mui-mode", mode);
-    } catch {
-      // ignore
-    }
+    localStorage.setItem("mui-mode", mode);
   }, [mode]);
 
   useEffect(() => {
-    try {
-      localStorage.setItem("saved-notes", JSON.stringify(savedNotes));
-    } catch {
-      // ignore
-    }
-  }, [savedNotes]);
+    localStorage.setItem("notes", JSON.stringify(notes));
+  }, [notes]);
+
+  useEffect(() => {
+    const onUp = () => setOnline(true);
+    const onDown = () => setOnline(false);
+    window.addEventListener("online", onUp);
+    window.addEventListener("offline", onDown);
+    return () => {
+      window.removeEventListener("online", onUp);
+      window.removeEventListener("offline", onDown);
+    };
+  }, []);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const items = await getAllAssets();
+        setLibrary(items);
+      } catch {}
+    })();
+  }, []);
 
   const theme = useMemo(
     () =>
       createTheme({
         palette: {
           mode,
-          primary: { main: mode === "dark" ? "#90caf9" : "#1976d2" },
+          primary: { main: "#1976d2" },
           secondary: { main: "#9c27b0" },
-          success: { main: "#2e7d32" },
-          warning: { main: "#ed6c02" },
         },
-        shape: { borderRadius: 14 },
-        components: {
-          MuiCard: { styleOverrides: { root: { borderWidth: 1, borderStyle: "solid", borderColor: mode === "dark" ? "#2f2f2f" : "#e5e5e5" } } },
-          MuiBottomNavigation: { styleOverrides: { root: { borderTop: `1px solid ${mode === "dark" ? "#2f2f2f" : "#e5e5e5"}` } } },
-        },
+        shape: { borderRadius: 12 },
       }),
     [mode]
   );
 
-  const showSnack = (message: string, severity: Snack["severity"] = "success") => setSnackbar({ open: true, message, severity });
+  const showSnack = (message: string, severity: SnackSeverity = "success") =>
+    setSnackbar({ open: true, message, severity });
 
-  const handleCopyText = async (text: string) => {
+  const extractTags = (text: string): string[] => {
+    const words = text.split(/\W+/).filter((w) => w.length > 3);
+    const unique = Array.from(new Set(words));
+    return unique.slice(0, 6);
+  };
+
+  const addNote = (title: string, content: string) => {
+    const id = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+    const newNote: NoteItem = {
+      id,
+      title: title.trim() || "Untitled",
+      content: content.trim(),
+      timestamp: Date.now(),
+      tags: extractTags(content),
+      pinned: false,
+    };
+    setNotes((prev) => [newNote, ...prev]);
+    showSnack("Note saved", "success");
+  };
+
+  const updateNote = (updated: NoteItem) => {
+    setNotes((prev) => prev.map((n) => (n.id === updated.id ? updated : n)));
+    showSnack("Note updated", "success");
+  };
+
+  const deleteNote = (id: string) => {
+    setNotes((prev) => prev.filter((n) => n.id !== id));
+    showSnack("Note deleted", "info");
+  };
+
+  const togglePin = (id: string) => {
+    setNotes((prev) =>
+      prev
+        .map((n) => (n.id === id ? { ...n, pinned: !n.pinned } : n))
+        .sort((a, b) => Number(b.pinned) - Number(a.pinned) || b.timestamp - a.timestamp)
+    );
+  };
+
+  const copyText = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text);
-      showSnack("Copied to clipboard", "success");
+      showSnack("Copied", "info");
     } catch {
       showSnack("Copy failed", "error");
     }
   };
 
-  const handleSaveNote = (note: NoteItem) => {
-    setSavedNotes((prev) => {
-      const existing = prev.find((n) => n.id === note.id);
-      let next = existing ? prev.map((n) => (n.id === note.id ? note : n)) : [note, ...prev];
-      next = next.slice(0, 500);
-      return next;
-    });
-    showSnack("Note saved", "success");
+  const isWebShareAvailable = (nav: Navigator): nav is NavigatorShare => {
+    return typeof (nav as NavigatorShare).share === "function";
   };
 
-  const handleDeleteNote = (id: string) => {
-    setSavedNotes((prev) => prev.filter((n) => n.id !== id));
-    showSnack("Note deleted", "info");
+  const shareText = async (title: string, text: string, url?: string) => {
+    try {
+      if (isWebShareAvailable(navigator)) {
+        await navigator.share({ title, text, url });
+        showSnack("Shared", "success");
+      } else {
+        await navigator.clipboard.writeText([title, text, url || ""].filter(Boolean).join("\n\n"));
+        showSnack("Share unavailable; copied instead", "info");
+      }
+    } catch {
+      await navigator.clipboard.writeText([title, text, url || ""].filter(Boolean).join("\n\n"));
+      showSnack("Share failed; copied instead", "warning");
+    }
   };
 
-  const handleResetAll = () => {
-    setSavedNotes([]);
-    showSnack("All notes cleared", "warning");
+  const exportNotesJSON = () => {
+    try {
+      const blob = new Blob([JSON.stringify(notes, null, 2)], { type: "application/json" });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `notes-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.json`;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      URL.revokeObjectURL(url);
+      showSnack("Exported JSON", "success");
+    } catch {
+      showSnack("Export failed", "error");
+    }
   };
 
-  const togglePin = (id: string) => {
-    setSavedNotes((prev) =>
-      prev
-        .map((n) => (n.id === id ? { ...n, pinned: !n.pinned } : n))
-        .sort((a, b) => (Number(b.pinned) - Number(a.pinned)) || (b.timestamp - a.timestamp))
-    );
+  const importNotesJSON = async (file: File) => {
+    try {
+      const text = await file.text();
+      const data = JSON.parse(text) as unknown;
+      if (!Array.isArray(data)) throw new Error("Invalid format");
+      const clean: NoteItem[] = data
+        .filter((n) => n && typeof n === "object")
+        .map((raw) => raw as NoteItem)
+        .filter((n) => n.id && n.title && typeof n.content === "string" && typeof n.timestamp === "number")
+        .map((n) => ({ ...n, pinned: !!n.pinned, tags: Array.isArray(n.tags) ? n.tags : extractTags(n.content) }));
+      setNotes(clean);
+      showSnack("Imported notes", "success");
+    } catch {
+      showSnack("Import failed", "error");
+    }
   };
 
-  const themeToggle = () => setMode((m) => (m === "dark" ? "light" : "dark"));
-
-  const OnboardingDialog = () => {
-    const [open, setOpen] = useState<boolean>(firstLaunch);
-    useEffect(() => setOpen(firstLaunch), [firstLaunch]);
-    const close = () => {
-      setOpen(false);
-      localStorage.setItem("onboarding-shown", "true");
-    };
-    return (
-      <Dialog open={open} onClose={close} fullWidth maxWidth="sm">
-        <DialogTitle>
-          <Stack direction="row" spacing={1} alignItems="center">
-            <InfoIcon color="primary" />
-            <Typography variant="h6">Welcome to Study Notes</Typography>
-          </Stack>
-        </DialogTitle>
-        <DialogContent dividers>
-          <Typography variant="body2" sx={{ mb: 2 }}>
-            Generate structured notes, save offline, and study with an Android-style interface. Toggle dark mode, pin important notes, and export your data.
-          </Typography>
-          <List dense>
-            <ListItem>
-              <ListItemText primary="Generate notes: Subject + topics → instant outline." />
-            </ListItem>
-            <ListItem>
-              <ListItemText primary="Save offline: localStorage keeps notes on your device." />
-            </ListItem>
-            <ListItem>
-              <ListItemText primary="Pin, edit, copy, share, export/import JSON backups." />
-            </ListItem>
-          </List>
-        </DialogContent>
-        <DialogActions>
-          <Button variant="contained" onClick={close} startIcon={<CheckIcon />}>
-            Start
-          </Button>
-        </DialogActions>
-      </Dialog>
-    );
+  const printNoteToPDF = (note: NoteItem) => {
+    const win = window.open("", "_blank", "noopener,noreferrer");
+    if (!win) {
+      showSnack("Pop-up blocked. Allow pop-ups.", "warning");
+      return;
+    }
+    win.document.write(`
+      <html>
+        <head>
+          <title>${note.title}</title>
+          <style>
+            body { font-family: Arial, sans-serif; padding: 24px; }
+            h1 { margin-bottom: 8px; }
+            time { color: #666; font-size: 12px; }
+            pre { white-space: pre-wrap; word-wrap: break-word; font-size: 14px; }
+          </style>
+        </head>
+        <body>
+          <h1>${escapeHtml(note.title)}</h1>
+          <time>${new Date(note.timestamp).toLocaleString()}</time>
+          <hr />
+          <pre>${escapeHtml(note.content)}</pre>
+          <script>window.print();</script>
+        </body>
+      </html>
+    `);
+    win.document.close();
   };
+
+  const escapeHtml = (s: string) =>
+    s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+  const uploadAssets = async (files: FileList | null) => {
+    if (!files || files.length === 0) return;
+    try {
+      for (const file of Array.from(files)) {
+        const id = crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`;
+        await addAsset(id, file);
+      }
+      const items = await getAllAssets();
+      setLibrary(items);
+      showSnack("Files saved offline", "success");
+    } catch {
+      showSnack("File save failed", "error");
+    }
+  };
+
+  const removeAsset = async (id: string) => {
+    try {
+      await deleteAsset(id);
+      const items = await getAllAssets();
+      setLibrary(items);
+      showSnack("Deleted asset", "info");
+    } catch {
+      showSnack("Delete failed", "error");
+    }
+  };
+
+  const filteredNotes = notes.filter((n) => {
+    const q = search.trim().toLowerCase();
+    if (!q) return true;
+    return n.title.toLowerCase().includes(q) || n.content.toLowerCase().includes(q) || n.tags.some((t) => t.toLowerCase().includes(q));
+  });
+
+  // Screens (no Grid, responsive via Stack/Box)
 
   const HomeScreen = () => {
-    const recent = savedNotes.slice().sort((a, b) => b.timestamp - a.timestamp).slice(0, 4);
+    const pinned = notes.filter((n) => n.pinned).slice(0, 4);
+    const recent = notes.slice().sort((a, b) => b.timestamp - a.timestamp).slice(0, 4);
     return (
       <Container sx={{ py: 2 }}>
-        <Card sx={{ mb: 2 }}>
-          <CardContent>
-            <Stack direction="row" alignItems="center" spacing={1}>
-              <SchoolIcon color="primary" />
-              <Typography variant="h6">Welcome, student</Typography>
-            </Stack>
-            <Typography variant="body2" sx={{ mt: 1 }}>
-              Build concise, exam-ready notes. Generate, pin, edit, and export—all offline. Switch to dark mode for late-night study sessions.
-            </Typography>
-          </CardContent>
-          <CardActions sx={{ px: 2, pb: 2 }}>
-            <Button variant="contained" startIcon={<NoteAddIcon />} onClick={() => setTab(1)}>
-              Create notes
-            </Button>
-            <Button variant="outlined" startIcon={<SaveIcon />} onClick={() => setTab(2)}>
-              View saved
-            </Button>
-          </CardActions>
-        </Card>
-
-        <Card sx={{ mb: 2 }}>
-          <CardContent>
-            <Stack direction="row" alignItems="center" spacing={1}>
-              <TipsAndUpdatesIcon color="secondary" />
-              <Typography variant="h6">Study tips</Typography>
-            </Stack>
-            <List dense>
-              <ListItem>
-                <ListItemText primary="Active recall over passive reading—test yourself using ‘Quick Q&A’." />
-              </ListItem>
-              <ListItem>
-                <ListItemText primary="Chunk topics; tag notes by subject and level for faster retrieval." />
-              </ListItem>
-              <ListItem>
-                <ListItemText primary="Keep summaries short; revise pinned notes daily." />
-              </ListItem>
-            </List>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent>
-            <Stack direction="row" alignItems="center" spacing={1}>
-              <CheckCircleIcon color="success" />
-              <Typography variant="h6">Recent notes</Typography>
-            </Stack>
-            {recent.length === 0 ? (
-              <Typography variant="body2" sx={{ mt: 1 }}>
-                No notes yet. Generate your first note to see it here.
-              </Typography>
-            ) : (
-              <List dense>
-                {recent.map((n) => (
-                  <ListItem key={n.id} sx={{ alignItems: "flex-start" }}>
-                    <ListItemText
-                      primary={
-                        <Stack direction="row" spacing={1} alignItems="center">
-                          <Typography variant="subtitle1">{n.title}</Typography>
-                          <Stack direction="row" spacing={0.5}>
-                            {n.tags.slice(0, 4).map((t) => (
-                              <Chip key={t} label={t} size="small" variant="outlined" />
-                            ))}
-                          </Stack>
-                        </Stack>
-                      }
-                      secondary={
-                        <Box sx={{ mt: 0.5 }}>
-                          <Typography variant="caption" color="text.secondary">
-                            {new Date(n.timestamp).toLocaleString()}
-                          </Typography>
-                          <Typography
-                            variant="body2"
-                            sx={{ mt: 0.5, display: "-webkit-box", WebkitLineClamp: 2, WebkitBoxOrient: "vertical", overflow: "hidden" }}
-                          >
-                            {n.content}
-                          </Typography>
-                        </Box>
-                      }
-                    />
-                    <Stack direction="row">
-                      <Tooltip title="Copy">
-                        <IconButton onClick={() => handleCopyText(n.content)}>
-                          <ContentCopyIcon />
-                        </IconButton>
-                      </Tooltip>
-                      <Tooltip title={n.pinned ? "Unpin" : "Pin"}>
-                        <IconButton onClick={() => togglePin(n.id)}>{n.pinned ? <PushPinIcon /> : <PushPinOutlinedIcon />}</IconButton>
-                      </Tooltip>
-                    </Stack>
-                  </ListItem>
-                ))}
-              </List>
-            )}
-          </CardContent>
-        </Card>
-      </Container>
-    );
-  };
-
-  const NoteGeneratorScreen = () => {
-    const [subject, setSubject] = useState<string>("");
-    const [topics, setTopics] = useState<string>("");
-    const [level, setLevel] = useState<string>("High School");
-    const [style, setStyle] = useState<string>("Bulleted");
-    const [tone, setTone] = useState<string>("Concise");
-    const [generated, setGenerated] = useState<string>("");
-    const [title, setTitle] = useState<string>("");
-    const [noteColor, setNoteColor] = useState<NoteItem["color"]>("default");
-
-    const tokenize = (text: string) =>
-      text
-        .split(/[,\n;]+/)
-        .map((t) => t.trim())
-        .filter((t) => t.length > 0);
-
-    const makeTags = (subj: string, tpcs: string[]) => {
-      const base = [subj, level, style, tone].filter(Boolean);
-      const clean = Array.from(new Set([...base, ...tpcs.map((x) => x)]));
-      return clean.slice(0, 10);
-    };
-
-    const dividerLine = "————————————";
-
-    const generateNotes = () => {
-      const t = tokenize(topics);
-      const subj = subject.trim();
-      if (!subj) {
-        showSnack("Add a subject/course", "warning");
-        return;
-      }
-      if (t.length === 0) {
-        showSnack("Add at least one topic", "warning");
-        return;
-      }
-
-      const section = (h: string, body: string[]) => [`• ${h}`, ...body.map((b) => `  - ${b}`)].join("\n");
-
-      const outline: string[] = [];
-      outline.push(`${subj} — ${level} (${style}, ${tone})`);
-      outline.push(dividerLine);
-      outline.push(section("Key definitions", t.map((x) => `${x}: short, exam-ready definition.`)));
-      outline.push(
-        section(
-          "Core concepts",
-          t.map((x) => `Explain ${x} in 2–3 bullets; include formula or relationship when relevant.`)
-        )
-      );
-      outline.push(section("Examples", t.map((x) => `One everyday or real-world example that illustrates ${x}.`)));
-      outline.push(section("Common mistakes", t.map((x) => `Misunderstanding ${x}; confusing similar terms; skipping units/context.`)));
-      outline.push(section("Quick Q&A", t.map((x) => `What is ${x}? Why does it matter? One-line answer.`)));
-      outline.push(section("Summary", [`Link definitions → concepts → examples. Keep recall tight and accurate.`]));
-
-      const suggestedTitle = `${subj}: ${t.slice(0, 3).join(" • ")}`;
-      setTitle(suggestedTitle);
-      setGenerated(outline.join("\n"));
-      showSnack("Notes generated", "success");
-    };
-
-    const handleSave = () => {
-      if (!generated) {
-        showSnack("Generate notes first", "info");
-        return;
-      }
-      const t = tokenize(topics);
-      const note: NoteItem = {
-        id: crypto.randomUUID ? crypto.randomUUID() : `${Date.now()}-${Math.random()}`,
-        title: title || subject || "Untitled",
-        content: generated,
-        timestamp: Date.now(),
-        tags: makeTags(subject, t),
-        pinned: false,
-        color: noteColor || "default",
-      };
-      handleSaveNote(note);
-    };
-
-    const handleReset = () => {
-      setSubject("");
-      setTopics("");
-      setLevel("High School");
-      setStyle("Bulleted");
-      setTone("Concise");
-      setGenerated("");
-      setTitle("");
-      setNoteColor("default");
-      showSnack("Form reset", "info");
-    };
-
-    return (
-      <Container sx={{ py: 2 }}>
-        <Card sx={{ mb: 2 }}>
-          <CardContent>
-            <Typography variant="h6">Generate study notes</Typography>
-            <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>
-              Enter your subject and topics. The generator creates a structured outline ready for revision.
-            </Typography>
-            <Box sx={{ mt: 2 }}>
-              <TextField fullWidth label="Subject / Course" value={subject} onChange={(e) => setSubject(e.target.value)} placeholder="Biology, Mathematics, History..." sx={{ mb: 2 }} />
-              <TextField
-                fullWidth
-                multiline
-                minRows={3}
-                label="Topics (comma or newline separated)"
-                value={topics}
-                onChange={(e) => setTopics(e.target.value)}
-                placeholder="Cell structure, Photosynthesis, Mitosis"
-                sx={{ mb: 2 }}
-              />
-              <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ mb: 2 }}>
-                <TextField fullWidth label="Level" value={level} onChange={(e) => setLevel(e.target.value)} placeholder="High School, Undergraduate, etc." />
-                <TextField fullWidth label="Style" value={style} onChange={(e) => setStyle(e.target.value)} placeholder="Bulleted, Outline, Summary" />
-              </Stack>
-              <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-                <TextField fullWidth label="Tone" value={tone} onChange={(e) => setTone(e.target.value)} placeholder="Concise, Detailed, Exam-focus" />
-                <FormControl fullWidth>
-                  <InputLabel id="note-color-label">Note color</InputLabel>
-                  <Select labelId="note-color-label" label="Note color" value={noteColor} onChange={(e) => setNoteColor(e.target.value as NoteItem["color"])}>
-                    <MenuItem value="default">Default</MenuItem>
-                    <MenuItem value="primary">Primary</MenuItem>
-                    <MenuItem value="secondary">Secondary</MenuItem>
-                    <MenuItem value="success">Success</MenuItem>
-                    <MenuItem value="warning">Warning</MenuItem>
-                    <MenuItem value="error">Error</MenuItem>
-                  </Select>
-                </FormControl>
-              </Stack>
-            </Box>
-          </CardContent>
-          <CardActions sx={{ px: 2, pb: 2 }}>
-            <Button variant="contained" startIcon={<NoteAddIcon />} onClick={generateNotes}>
-              Generate
-            </Button>
-            <Button variant="outlined" startIcon={<RestartAltIcon />} onClick={handleReset}>
-              Reset
-            </Button>
-          </CardActions>
-        </Card>
-
-        <Card>
-          <CardContent>
-            <Stack direction="row" alignItems="center" spacing={1} sx={{ mb: 1 }}>
-              <Typography variant="h6">Preview</Typography>
-              {generated && <Chip label="Ready" color="success" size="small" />}
-            </Stack>
-            <TextField fullWidth multiline minRows={10} value={generated} onChange={(e) => setGenerated(e.target.value)} placeholder="Your generated notes will appear here..." />
-          </CardContent>
-          <CardActions sx={{ px: 2, pb: 2 }}>
-            <Button variant="contained" color="secondary" startIcon={<SaveIcon />} onClick={handleSave} disabled={!generated}>
-              Save
-            </Button>
-            <Button variant="outlined" startIcon={<ContentCopyIcon />} onClick={() => handleCopyText(generated)} disabled={!generated}>
-              Copy
-            </Button>
-          </CardActions>
-        </Card>
-      </Container>
-    );
-  };
-
-  const SavedNotesScreen = () => {
-    const [query, setQuery] = useState<string>("");
-    const [sortBy, setSortBy] = useState<"recent" | "oldest" | "title">("recent");
-    const [editOpen, setEditOpen] = useState<boolean>(false);
-    const [editNote, setEditNote] = useState<NoteItem | null>(null);
-
-    const filtered = useMemo(() => {
-      const q = query.trim().toLowerCase();
-      let list = savedNotes.slice();
-      if (q) {
-        list = list.filter((n) => n.title.toLowerCase().includes(q) || n.content.toLowerCase().includes(q) || n.tags.some((t) => t.toLowerCase().includes(q)));
-      }
-      list.sort((a, b) => {
-        if (sortBy === "recent") return (Number(b.pinned) - Number(a.pinned)) || (b.timestamp - a.timestamp);
-        if (sortBy === "oldest") return (Number(b.pinned) - Number(a.pinned)) || (a.timestamp - b.timestamp);
-        return (Number(b.pinned) - Number(a.pinned)) || a.title.localeCompare(b.title);
-      });
-      return list;
-    }, [savedNotes, query, sortBy]);
-
-    const openEdit = (n: NoteItem) => {
-      setEditNote(n);
-      setEditOpen(true);
-    };
-
-    const closeEdit = () => {
-      setEditOpen(false);
-      setEditNote(null);
-    };
-
-    const saveEdit = () => {
-      if (!editNote) return;
-      handleSaveNote(editNote);
-      closeEdit();
-      showSnack("Note updated", "success");
-    };
-
-    const shareNote = async (n: NoteItem) => {
-      const text = `${n.title}\n${new Date(n.timestamp).toLocaleString()}\n\n${n.content}`;
-      try {
-        if (navigator.share && typeof navigator.share === "function") {
-          await navigator.share({ title: n.title, text });
-          showSnack("Shared", "success");
-        } else {
-          await navigator.clipboard.writeText(text);
-          showSnack("Share unavailable; note copied instead", "info");
-        }
-      } catch {
-        await navigator.clipboard.writeText(text);
-        showSnack("Share failed; note copied", "warning");
-      }
-    };
-
-    const exportJSON = () => {
-      try {
-        const blob = new Blob([JSON.stringify(savedNotes, null, 2)], { type: "application/json" });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement("a");
-        a.href = url;
-        a.download = `study-notes-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "-")}.json`;
-        document.body.appendChild(a);
-        a.click();
-        a.remove();
-        URL.revokeObjectURL(url);
-        showSnack("Exported JSON", "success");
-      } catch {
-        showSnack("Export failed", "error");
-      }
-    };
-
-    const importJSON = async (file: File) => {
-      try {
-        const text = await file.text();
-        const data = JSON.parse(text) as NoteItem[];
-        if (!Array.isArray(data)) throw new Error("Invalid format");
-        const clean = data
-          .filter((n) => n && n.id && n.title && n.content && typeof n.timestamp === "number")
-          .map((n) => ({ ...n, pinned: !!n.pinned, color: (n.color as NoteItem["color"]) || "default" }));
-        setSavedNotes(clean.slice(0, 500));
-        showSnack("Imported notes", "success");
-      } catch {
-        showSnack("Import failed", "error");
-      }
-    };
-
-    return (
-      <Container sx={{ py: 2 }}>
-        <Card sx={{ mb: 2 }}>
-          <CardContent>
-            <Stack direction={{ xs: "column", md: "row" }} spacing={2} alignItems={{ xs: "stretch", md: "center" }} justifyContent="space-between">
-              <Stack direction="row" spacing={1} alignItems="center">
-                <Typography variant="h6">Saved notes</Typography>
-                <Badge badgeContent={savedNotes.length} color="primary" />
-              </Stack>
-              <Stack direction={{ xs: "column", sm: "row" }} spacing={2} alignItems={{ xs: "stretch", sm: "center" }}>
-                <TextField label="Search" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter by title, content, or tag" fullWidth />
-                <FormControl sx={{ minWidth: 160 }}>
-                  <InputLabel id="sort-label">Sort by</InputLabel>
-                  <Select labelId="sort-label" label="Sort by" value={sortBy} onChange={(e) => setSortBy(e.target.value as typeof sortBy)}>
-                    <MenuItem value="recent">Recent</MenuItem>
-                    <MenuItem value="oldest">Oldest</MenuItem>
-                    <MenuItem value="title">Title</MenuItem>
-                  </Select>
-                </FormControl>
-              </Stack>
-            </Stack>
-          </CardContent>
-          <CardActions sx={{ px: 2, pb: 2 }}>
-            <Button variant="outlined" color="warning" startIcon={<DeleteForeverIcon />} onClick={handleResetAll} disabled={savedNotes.length === 0}>
-              Clear all
-            </Button>
-            <Button variant="outlined" startIcon={<DownloadIcon />} onClick={exportJSON} disabled={savedNotes.length === 0}>
-              Export JSON
-            </Button>
-            <Button variant="outlined" startIcon={<UploadFileIcon />} component="label">
-              Import JSON
-              <input
-                hidden
-                type="file"
-                accept="application/json"
-                onChange={(e) => {
-                  const f = e.target.files?.[0];
-                  if (f) importJSON(f);
-                }}
-              />
-            </Button>
-          </CardActions>
-        </Card>
-
-        {filtered.length === 0 ? (
+        <Stack spacing={2}>
           <Card>
             <CardContent>
-              <Typography variant="body2">No notes found. Try generating new notes or adjust your search.</Typography>
+              <Stack direction="row" alignItems="center" justifyContent="space-between" flexWrap="wrap">
+                <Stack direction="row" spacing={1} alignItems="center">
+                  <Typography variant="h6">Study Super App</Typography>
+                  <Chip
+                    icon={online ? <CloudDoneIcon /> : <CloudOffIcon />}
+                    label={online ? "Online" : "Offline"}
+                    color={online ? "success" : "default"}
+                    size="small"
+                  />
+                </Stack>
+                <Stack direction="row" spacing={1}>
+                  <Button variant="contained" startIcon={<NoteAddIcon />} onClick={() => setTab(1)}>
+                    New note
+                  </Button>
+                  <Button variant="outlined" startIcon={<Inventory2Icon />} onClick={() => setTab(2)}>
+                    Library
+                  </Button>
+                </Stack>
+              </Stack>
+              <Typography variant="body2" sx={{ mt: 1 }}>
+                Create notes, save PDFs, manage files, preview videos/images, share and export—all offline and online.
+              </Typography>
             </CardContent>
           </Card>
-        ) : (
+
+          <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
+            <Card sx={{ flex: 1 }}>
+              <CardContent>
+                <Typography variant="subtitle1">Pinned notes</Typography>
+                <Stack spacing={1} sx={{ mt: 1 }}>
+                  {pinned.length === 0 ? (
+                    <Typography variant="body2">No pinned notes yet.</Typography>
+                  ) : (
+                    pinned.map((n) => (
+                      <Stack key={n.id} spacing={0.5} sx={{ borderLeft: "3px solid #1976d2", pl: 1 }}>
+                        <Typography variant="body2" sx={{ fontWeight: 600 }}>{n.title}</Typography>
+                        <Typography variant="caption">{new Date(n.timestamp).toLocaleString()}</Typography>
+                      </Stack>
+                    ))
+                  )}
+                </Stack>
+              </CardContent>
+            </Card>
+
+            <Card sx={{ flex: 1 }}>
+              <CardContent>
+                <Typography variant="subtitle1">Recent notes</Typography>
+                <Stack spacing={1} sx={{ mt: 1 }}>
+                  {recent.length === 0 ? (
+                    <Typography variant="body2">No notes yet.</Typography>
+                  ) : (
+                    recent.map((n) => (
+                      <Stack key={n.id} spacing={0.5} sx={{ borderLeft: "3px solid #9c27b0", pl: 1 }}>
+                        <Typography variant="body2" sx={{ fontWeight: 600 }}>{n.title}</Typography>
+                        <Typography variant="caption">{new Date(n.timestamp).toLocaleString()}</Typography>
+                      </Stack>
+                    ))
+                  )}
+                </Stack>
+              </CardContent>
+            </Card>
+          </Stack>
+        </Stack>
+      </Container>
+    );
+  };
+
+  const NoteScreen = () => {
+    const [title, setTitle] = useState<string>("");
+    const [content, setContent] = useState<string>("");
+    return (
+      <Container sx={{ py: 2 }}>
+        <Stack spacing={2}>
+          <Card>
+            <CardContent>
+              <Stack direction="row" alignItems="center" spacing={1} flexWrap="wrap">
+                <Typography variant="h6">Create note</Typography>
+                <Chip icon={<SearchIcon />} label="Tip: add keywords for better search" size="small" />
+              </Stack>
+              <Stack spacing={2} sx={{ mt: 2 }}>
+                <TextField label="Title" value={title} onChange={(e) => setTitle(e.target.value)} fullWidth />
+                <TextField
+                  label="Content"
+                  value={content}
+                  onChange={(e) => setContent(e.target.value)}
+                  fullWidth
+                  multiline
+                  minRows={8}
+                  placeholder={`• Key points\n  - Short bullets\n• Summary\n  - Keep it concise`}
+                />
+              </Stack>
+            </CardContent>
+            <CardActions>
+              <Button
+                variant="contained"
+                startIcon={<SaveIcon />}
+                onClick={() => {
+                  if (!content.trim()) return showSnack("Write some content", "warning");
+                  addNote(title, content);
+                  setTitle("");
+                  setContent("");
+                }}
+              >
+                Save
+              </Button>
+              <Button variant="text" startIcon={<RestartAltIcon />} onClick={() => { setTitle(""); setContent(""); }}>
+                Reset
+              </Button>
+            </CardActions>
+          </Card>
+
+          <Card>
+            <CardContent>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ xs: "stretch", sm: "center" }}>
+                <TextField label="Search notes" value={search} onChange={(e) => setSearch(e.target.value)} fullWidth />
+                <Button variant="outlined" startIcon={<DownloadIcon />} onClick={exportNotesJSON} disabled={notes.length === 0}>
+                  Export JSON
+                </Button>
+                <Button variant="outlined" component="label" startIcon={<UploadFileIcon />}>
+                  Import JSON
+                  <input
+                    hidden
+                    type="file"
+                    accept="application/json"
+                    onChange={(e) => {
+                      const f = e.target.files?.[0] || null;
+                      if (f) importNotesJSON(f);
+                    }}
+                  />
+                </Button>
+              </Stack>
+            </CardContent>
+          </Card>
+
           <Stack spacing={2}>
-            {filtered.map((n) => (
-              <Card key={n.id}>
+            {filteredNotes.length === 0 ? (
+              <Card>
                 <CardContent>
-                  <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 1 }}>
-                    <Stack direction="row" spacing={1} alignItems="center">
+                  <Typography variant="body2">No matching notes.</Typography>
+                </CardContent>
+              </Card>
+            ) : (
+              filteredNotes.map((n) => (
+                <Card key={n.id}>
+                  <CardContent>
+                    <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }}>
                       <Typography variant="h6">{n.title}</Typography>
-                      {n.pinned && <Chip label="Pinned" size="small" color="warning" variant="outlined" />}
+                      <Stack direction="row" spacing={0.5} flexWrap="wrap">
+                        {n.tags.map((t) => (
+                          <Chip key={t} label={t} size="small" variant="outlined" />
+                        ))}
+                      </Stack>
                     </Stack>
                     <Typography variant="caption" color="text.secondary">
                       {new Date(n.timestamp).toLocaleString()}
                     </Typography>
-                  </Stack>
-                  <Stack direction="row" spacing={0.5} sx={{ mb: 1, flexWrap: "wrap" }}>
-                    {n.tags.map((t) => (
-                      <Chip key={t} label={t} size="small" variant="outlined" />
-                    ))}
-                  </Stack>
-                  <TextField
-                    fullWidth
-                    multiline
-                    minRows={6}
-                    value={n.content}
-                    onChange={(e) => setEditNote({ ...n, content: e.target.value })}
-                    onFocus={() => {
-                      if (!editOpen) {
-                        setEditNote(n);
-                        setEditOpen(true);
-                      }
-                    }}
-                  />
-                </CardContent>
-                <CardActions sx={{ px: 2, pb: 2 }}>
-                  <Button variant="outlined" startIcon={<ContentCopyIcon />} onClick={() => handleCopyText(n.content)}>
-                    Copy
-                  </Button>
-                  <Button variant="outlined" startIcon={<ShareIcon />} onClick={() => shareNote(n)}>
-                    Share
-                  </Button>
-                  <Button variant="outlined" startIcon={<EditIcon />} onClick={() => openEdit(n)}>
-                    Edit
-                  </Button>
-                  <Button variant="text" color="error" startIcon={<DeleteForeverIcon />} onClick={() => handleDeleteNote(n.id)}>
-                    Delete
-                  </Button>
-                  <Button variant={n.pinned ? "contained" : "outlined"} color="warning" startIcon={n.pinned ? <PushPinIcon /> : <PushPinOutlinedIcon />} onClick={() => togglePin(n.id)}>
-                    {n.pinned ? "Unpin" : "Pin"}
-                  </Button>
-                </CardActions>
-              </Card>
-            ))}
+                    <TextField
+                      fullWidth
+                      multiline
+                      minRows={6}
+                      sx={{ mt: 1 }}
+                      value={n.content}
+                      onChange={(e) => updateNote({ ...n, content: e.target.value, tags: extractTags(e.target.value) })}
+                    />
+                  </CardContent>
+                  <CardActions sx={{ flexWrap: "wrap", gap: 1 }}>
+                    <Button variant="outlined" startIcon={<ContentCopyIcon />} onClick={() => copyText(n.content)}>
+                      Copy
+                    </Button>
+                    <Button variant="outlined" startIcon={<ShareIcon />} onClick={() => shareText(n.title, n.content)}>
+                      Share
+                    </Button>
+                    <Button variant="outlined" startIcon={<PictureAsPdfIcon />} onClick={() => printNoteToPDF(n)}>
+                      Save as PDF
+                    </Button>
+                    <Button
+                      variant={n.pinned ? "contained" : "outlined"}
+                      startIcon={n.pinned ? <PushPinIcon /> : <PushPinOutlinedIcon />}
+                      color="secondary"
+                      onClick={() => togglePin(n.id)}
+                    >
+                      {n.pinned ? "Unpin" : "Pin"}
+                    </Button>
+                    <Button variant="text" color="error" startIcon={<DeleteForeverIcon />} onClick={() => deleteNote(n.id)}>
+                      Delete
+                    </Button>
+                    <Button variant="text" startIcon={<EditIcon />} onClick={() => setEditingNote(n)}>
+                      Edit title
+                    </Button>
+                  </CardActions>
+                </Card>
+              ))
+            )}
           </Stack>
-        )}
 
-        <Dialog open={editOpen} onClose={closeEdit} fullWidth maxWidth="sm">
-          <DialogTitle>Edit note</DialogTitle>
-          <DialogContent dividers>
+          <Dialog open={!!editingNote} onClose={() => setEditingNote(null)} fullWidth maxWidth="sm">
+            <DialogTitle>Edit note title</DialogTitle>
+            <DialogContent dividers>
+              <TextField
+                label="Title"
+                fullWidth
+                value={editingNote?.title || ""}
+                onChange={(e) => setEditingNote((prev) => (prev ? { ...prev, title: e.target.value } : prev))}
+              />
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setEditingNote(null)}>Cancel</Button>
+              <Button
+                variant="contained"
+                onClick={() => {
+                  if (!editingNote) return;
+                  updateNote(editingNote);
+                  setEditingNote(null);
+                }}
+              >
+                Save
+              </Button>
+            </DialogActions>
+          </Dialog>
+        </Stack>
+      </Container>
+    );
+  };
+
+  const LibraryScreen = () => {
+    return (
+      <Container sx={{ py: 2 }}>
+        <Stack spacing={2}>
+          <Card>
+            <CardContent>
+              <Stack direction={{ xs: "column", sm: "row" }} spacing={1} alignItems={{ xs: "stretch", sm: "center" }}>
+                <Typography variant="h6">Library (offline files)</Typography>
+                <Stack direction="row" spacing={1} sx={{ ml: { sm: "auto" } }}>
+                  <Button variant="outlined" component="label" startIcon={<UploadFileIcon />}>
+                    Add files
+                    <input
+                      hidden
+                      type="file"
+                      multiple
+                      accept="application/pdf,video/*,image/*,*/*"
+                      onChange={(e) => uploadAssets(e.target.files)}
+                    />
+                  </Button>
+                  <Button
+                    variant="outlined"
+                    startIcon={<Inventory2Icon />}
+                    onClick={async () => {
+                      const items = await getAllAssets();
+                      setLibrary(items);
+                      showSnack("Library refreshed", "info");
+                    }}
+                  >
+                    Refresh
+                  </Button>
+                </Stack>
+              </Stack>
+              <Typography variant="body2" sx={{ mt: 1 }}>
+                Upload PDFs, videos, images, and other files. Stored offline in your browser (IndexedDB).
+              </Typography>
+            </CardContent>
+          </Card>
+
+          {library.length === 0 ? (
+            <Card>
+              <CardContent>
+                <Typography variant="body2">No files yet. Add some to see them here.</Typography>
+              </CardContent>
+            </Card>
+          ) : (
             <Stack spacing={2}>
-              <TextField label="Title" value={editNote?.title || ""} onChange={(e) => setEditNote((p) => (p ? { ...p, title: e.target.value } : p))} />
-              <TextField
-                label="Tags (comma separated)"
-                value={(editNote?.tags || []).join(", ")}
-                onChange={(e) =>
-                  setEditNote((p) => (p ? { ...p, tags: e.target.value.split(",").map((x) => x.trim()).filter(Boolean) } : p))
-                }
-              />
-              <FormControl>
-                <InputLabel id="edit-color-label">Note color</InputLabel>
-                <Select
-                  labelId="edit-color-label"
-                  label="Note color"
-                  value={editNote?.color || "default"}
-                  onChange={(e) => setEditNote((p) => (p ? { ...p, color: e.target.value as NoteItem["color"] } : p))}
-                >
-                  <MenuItem value="default">Default</MenuItem>
-                  <MenuItem value="primary">Primary</MenuItem>
-                  <MenuItem value="secondary">Secondary</MenuItem>
-                  <MenuItem value="success">Success</MenuItem>
-                  <MenuItem value="warning">Warning</MenuItem>
-                  <MenuItem value="error">Error</MenuItem>
-                </Select>
-              </FormControl>
-              <TextField
-                label="Content"
-                multiline
-                minRows={10}
-                value={editNote?.content || ""}
-                onChange={(e) => setEditNote((p) => (p ? { ...p, content: e.target.value } : p))}
-              />
+              {library.map((asset) => (
+                <Card key={asset.id}>
+                  <CardContent>
+                    <Stack direction={{ xs: "column", sm: "row" }} justifyContent="space-between" alignItems={{ xs: "flex-start", sm: "center" }}>
+                      <Stack direction="row" spacing={1} alignItems="center" flexWrap="wrap">
+                        {asset.kind === "pdf" && <PictureAsPdfIcon color="primary" />}
+                        {asset.kind === "video" && <MovieIcon color="primary" />}
+                        {asset.kind === "image" && <ImageIcon color="primary" />}
+                        <Typography variant="subtitle1">{asset.name}</Typography>
+                        <Chip label={asset.kind} size="small" variant="outlined" />
+                        <Typography variant="caption" color="text.secondary">
+                          {(asset.size / (1024 * 1024)).toFixed(2)} MB
+                        </Typography>
+                      </Stack>
+                      <Typography variant="caption" color="text.secondary">{new Date(asset.created).toLocaleString()}</Typography>
+                    </Stack>
+                  </CardContent>
+                  <CardActions sx={{ flexWrap: "wrap", gap: 1 }}>
+                    <Button variant="contained" onClick={() => setPreviewAsset(asset)}>
+                      Open
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      startIcon={<ShareIcon />}
+                      onClick={() => {
+                        const url = fileToObjectURL(asset.file);
+                        void shareText(asset.name, `Saved in Library\n${new Date(asset.created).toLocaleString()}`, url);
+                      }}
+                    >
+                      Share
+                    </Button>
+                    <Button variant="text" color="error" startIcon={<DeleteForeverIcon />} onClick={() => void removeAsset(asset.id)}>
+                      Delete
+                    </Button>
+                    <Button
+                      variant="outlined"
+                      startIcon={<DownloadIcon />}
+                      onClick={() => {
+                        const url = fileToObjectURL(asset.file);
+                        const a = document.createElement("a");
+                        a.href = url;
+                        a.download = asset.name;
+                        document.body.appendChild(a);
+                        a.click();
+                        a.remove();
+                        URL.revokeObjectURL(url);
+                      }}
+                    >
+                      Download
+                    </Button>
+                  </CardActions>
+                </Card>
+              ))}
             </Stack>
-          </DialogContent>
-          <DialogActions>
-            <Button variant="text" onClick={closeEdit}>
-              Cancel
-            </Button>
-            <Button variant="contained" startIcon={<SaveIcon />} onClick={saveEdit} disabled={!editNote}>
-              Save changes
-            </Button>
-          </DialogActions>
-        </Dialog>
+          )}
+
+          <Dialog open={!!previewAsset} onClose={() => setPreviewAsset(null)} fullWidth maxWidth="md">
+            <DialogTitle>{previewAsset?.name}</DialogTitle>
+            <DialogContent dividers>
+              {!previewAsset ? null : (
+                <Box sx={{ width: "100%" }}>
+                  {previewAsset.kind === "pdf" && (
+                    <Box sx={{ width: "100%", height: { xs: 400, sm: 600 } }}>
+                      <iframe
+                        title={previewAsset.name}
+                        src={fileToObjectURL(previewAsset.file)}
+                        style={{ width: "100%", height: "100%", border: "none" }}
+                      />
+                    </Box>
+                  )}
+                  {previewAsset.kind === "video" && (
+                    <Box sx={{ width: "100%" }}>
+                      <video controls src={fileToObjectURL(previewAsset.file)} style={{ width: "100%" }} />
+                    </Box>
+                  )}
+                  {previewAsset.kind === "image" && (
+                    <Box sx={{ width: "100%" }}>
+                      <img alt={previewAsset.name} src={fileToObjectURL(previewAsset.file)} style={{ width: "100%", height: "auto", display: "block" }} />
+                    </Box>
+                  )}
+                  {previewAsset.kind === "other" && (
+                    <Typography variant="body2">Preview not supported. Use Download to open.</Typography>
+                  )}
+                </Box>
+              )}
+            </DialogContent>
+            <DialogActions>
+              <Button onClick={() => setPreviewAsset(null)}>Close</Button>
+            </DialogActions>
+          </Dialog>
+        </Stack>
       </Container>
     );
   };
 
   const ProfileScreen = () => {
-    const total = savedNotes.length;
-    const pinnedCount = savedNotes.filter((n) => n.pinned).length;
-    const tagsCount = savedNotes.reduce<Record<string, number>>((acc, n) => {
-      n.tags.forEach((t) => {
-        acc[t] = (acc[t] || 0) + 1;
-      });
-      return acc;
-    }, {});
-    const popularTags = Object.entries(tagsCount)
-      .sort((a, b) => b[1] - a[1])
-      .slice(0, 8);
-
     return (
       <Container sx={{ py: 2 }}>
-        <Card sx={{ mb: 2 }}>
-          <CardContent>
-            <Stack direction="row" alignItems="center" spacing={1}>
-              <PersonIcon color="primary" />
-              <Typography variant="h6">Profile</Typography>
-            </Stack>
-            <Typography variant="body2" sx={{ mt: 1 }}>
-              Your study activity and preferences. Toggle dark mode for comfortable night study sessions.
-            </Typography>
-            <Divider sx={{ my: 2 }} />
-            <Stack direction={{ xs: "column", sm: "row" }} spacing={2}>
-              <Card sx={{ flex: 1 }}>
-                <CardContent>
-                  <Typography variant="subtitle1">Stats</Typography>
-                  <List dense>
-                    <ListItem>
-                      <ListItemText primary={`Total saved notes: ${total}`} />
-                    </ListItem>
-                    <ListItem>
-                      <ListItemText primary={`Pinned notes: ${pinnedCount}`} />
-                    </ListItem>
-                    <ListItem>
-                      <ListItemText primary={`Theme: ${mode === "dark" ? "Dark" : "Light"}`} />
-                    </ListItem>
-                  </List>
-                </CardContent>
-              </Card>
-              <Card sx={{ flex: 2 }}>
-                <CardContent>
-                  <Typography variant="subtitle1">Popular tags</Typography>
-                  <Stack direction="row" spacing={1} sx={{ mt: 1, flexWrap: "wrap" }}>
-                    {popularTags.length === 0 ? (
-                      <Chip label="No tags yet" variant="outlined" />
-                    ) : (
-                      popularTags.map(([tag, count]) => <Chip key={tag} label={`${tag} (${count})`} color="secondary" variant="outlined" />)
-                    )}
-                  </Stack>
-                </CardContent>
-              </Card>
-            </Stack>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardContent>
-            <Typography variant="subtitle1">Appearance</Typography>
-            <Stack direction="row" alignItems="center" spacing={2} sx={{ mt: 1 }}>
-              <WbSunnyIcon />
-              <Switch checked={mode === "dark"} onChange={themeToggle} />
-              <NightsStayIcon />
-              <Typography variant="body2">{mode === "dark" ? "Dark mode enabled" : "Light mode enabled"}</Typography>
-            </Stack>
-          </CardContent>
-        </Card>
+        <Stack spacing={2}>
+          <Card>
+            <CardContent>
+              <Stack direction="row" alignItems="center" justifyContent="space-between" flexWrap="wrap">
+                <Typography variant="h6">Settings</Typography>
+                <SettingsIcon color="primary" />
+              </Stack>
+              <Stack direction="row" spacing={2} alignItems="center" sx={{ mt: 2 }}>
+                <Typography>Theme</Typography>
+                <Switch checked={mode === "dark"} onChange={() => setMode(mode === "dark" ? "light" : "dark")} />
+                <Chip label={mode === "dark" ? "Dark" : "Light"} variant="outlined" size="small" />
+              </Stack>
+              <Typography variant="body2" sx={{ mt: 2 }}>
+                Data is stored locally (offline). Use Export/Import to back up notes. Files are kept in IndexedDB.
+              </Typography>
+            </CardContent>
+          </Card>
+        </Stack>
       </Container>
     );
   };
@@ -791,53 +776,45 @@ export default function Page() {
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <OnboardingDialog />
       <Box sx={{ minHeight: "100vh", display: "flex", flexDirection: "column" }}>
-        <AppBar position="static" color="primary" enableColorOnDark>
-          <Toolbar sx={{ justifyContent: "space-between" }}>
-            <Stack direction="row" alignItems="center" spacing={1}>
-              <Typography variant="h6">Study Notes App</Typography>
-              <Chip label="Android style" size="small" color="default" variant="outlined" />
-            </Stack>
-            <Stack direction="row" alignItems="center" spacing={1}>
-              <Tooltip title="Toggle theme">
-                <Stack direction="row" alignItems="center">
-                  <WbSunnyIcon fontSize="small" />
-                  <Switch checked={mode === "dark"} onChange={themeToggle} />
-                  <NightsStayIcon fontSize="small" />
-                </Stack>
-              </Tooltip>
+        <AppBar position="static" color="primary">
+          <Toolbar sx={{ justifyContent: "space-between", flexWrap: "wrap" }}>
+            <Typography variant="h6">Study Super App</Typography>
+            <Stack direction="row" spacing={1} alignItems="center">
+              <Chip
+                icon={online ? <CloudDoneIcon /> : <CloudOffIcon />}
+                label={online ? "Online" : "Offline"}
+                color={online ? "success" : "default"}
+                size="small"
+              />
+              <Switch checked={mode === "dark"} onChange={() => setMode(mode === "dark" ? "light" : "dark")} />
             </Stack>
           </Toolbar>
         </AppBar>
 
         <Box sx={{ flex: 1 }}>
           {tab === 0 && <HomeScreen />}
-          {tab === 1 && <NoteGeneratorScreen />}
-          {tab === 2 && <SavedNotesScreen />}
+          {tab === 1 && <NoteScreen />}
+          {tab === 2 && <LibraryScreen />}
           {tab === 3 && <ProfileScreen />}
         </Box>
 
-        <Box sx={{ position: "sticky", bottom: 0, left: 0, right: 0 }}>
-          <BottomNavigation value={tab} onChange={(_, v) => setTab(v)} sx={{ bgcolor: "background.paper" }} showLabels>
-            <BottomNavigationAction label="Home" icon={<HomeIcon />} />
-            <BottomNavigationAction label="Generate" icon={<NoteAddIcon />} />
-            <BottomNavigationAction label="Saved" icon={<SaveIcon />} />
-            <BottomNavigationAction label="Profile" icon={<PersonIcon />} />
-          </BottomNavigation>
-        </Box>
+        <BottomNavigation value={tab} onChange={(_, v) => setTab(v)} showLabels>
+          - 
+          <BottomNavigationAction label="Home" icon={<HomeIcon />} />
+          <BottomNavigationAction label="Notes" icon={<NoteAddIcon />} />
+          <BottomNavigationAction label="Library" icon={<Inventory2Icon />} />
+          <BottomNavigationAction label="Profile" icon={<PersonIcon />} />
+        </BottomNavigation>
       </Box>
 
       <Snackbar
         open={snackbar.open}
         autoHideDuration={3000}
-        onClose={(_, reason) => {
-          if (reason === "clickaway") return;
-          setSnackbar((s) => ({ ...s, open: false }));
-        }}
+        onClose={() => setSnackbar((s) => ({ ...s, open: false }))}
         anchorOrigin={{ vertical: "bottom", horizontal: "center" }}
       >
-        <Alert onClose={() => setSnackbar((s) => ({ ...s, open: false }))} severity={snackbar.severity} variant="filled" sx={{ width: "100%" }}>
+        <Alert severity={snackbar.severity} sx={{ width: "100%" }}>
           {snackbar.message}
         </Alert>
       </Snackbar>
